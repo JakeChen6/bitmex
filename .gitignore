@@ -3,3 +3,4 @@
 *.pyc
 
 api_config.py
+account_config.py
