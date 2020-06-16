@@ -2,5 +2,5 @@
 
 *.pyc
 
-api_config.py
-account_config.py
+bitmex_config.py
+mongo_config.py
