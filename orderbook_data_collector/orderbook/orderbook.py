@@ -6,7 +6,7 @@
 
 import time
 
-from redisOrderTree import OrderTree
+from .redisOrderTree import OrderTree
 
 class OrderException(Exception): pass
 class OrderQuantityError(OrderException): pass
@@ -22,7 +22,7 @@ class Order:
 
     def processPriceLevel(self, book, tree, orderList, qtyToTrade):
         """
-        Takes a list of quotes at a certain price level as well as an incoming order
+        Takes a list of orders at a certain price level as well as an incoming order
         and matches appropriate trades given the order quantity.
         """
         trades = []
