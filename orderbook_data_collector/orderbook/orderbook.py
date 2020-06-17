@@ -4,7 +4,7 @@
 
 """
 
-import time
+import datetime as dt
 
 from .redisOrderTree import OrderTree
 
@@ -162,9 +162,9 @@ class OrderBook:
         return self.asks.maxPrice()
 
     def getTimestamp(self):
-        t = time.time()
+        t = dt.datetime.utcnow().timestamp()
         while t == self._lastTimestamp:
-            t = time.time()
+            t = dt.datetime.utcnow().timestamp()
         self._lastTimestamp = t
         return t
 
