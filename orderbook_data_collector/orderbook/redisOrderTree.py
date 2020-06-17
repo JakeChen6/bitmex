@@ -42,8 +42,8 @@ class OrderTree:
         self.red.hset(self.KEY_TEMPLATE_ORDER % order.orderId, mapping=order.__dict__)
         self.red.rpush(self.KEY_TEMPLATE_ORDERS_BY_PRICE % price, order.orderId)
 
-    def updateOrderQuantity(self, orderId, newQty):
-        self.red.hset(self.KEY_TEMPLATE_ORDER % orderId, 'qty', newQty)
+    def updateOrder(self, orderId, mapping):
+        self.red.hset(self.KEY_TEMPLATE_ORDER % orderId, mapping=mapping)
 
     def removeOrderById(self, orderId):
         order = self.red.hgetall(self.KEY_TEMPLATE_ORDER % orderId)

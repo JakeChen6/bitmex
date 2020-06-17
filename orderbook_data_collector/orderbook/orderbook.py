@@ -32,7 +32,7 @@ class Order:
             if qtyToTrade < order.qty:
                 tradeQty = qtyToTrade
                 newBookQty = order.qty - qtyToTrade
-                tree.updateOrderQuantity(order.orderId, newBookQty)
+                tree.updateOrder(order.orderId, {'qty': newBookQty})
                 qtyToTrade = 0
             elif qtyToTrade == order.qty:
                 tradeQty = qtyToTrade
