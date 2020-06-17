@@ -1,12 +1,28 @@
 import websocket
 import threading
 import traceback
-from time import sleep
+import time
 import json
 import logging
 import urllib
 import math
 from util.api_key import generate_nonce, generate_signature
+
+from orderbook.orderbook import Bid, Ask, OrderBook
+from bitmex_config import ACCOUNT
+
+EXCH = 'BitMEX'
+
+# This is what I'm asked to write into Redis
+TARGET = ['orderBookL2', 'margin', 'position']
+
+
+def helper_dict_clean(items):
+    """
+    Redis only accepts bytes, str, int, or float types.
+    This helper converts None to empty string ''.
+    """
+    return {k: v if v is not None else '' for k, v in items}
 
 
 # Naive implementation of connecting to BitMEX websocket for streaming realtime data.
@@ -22,13 +38,22 @@ class BitMEXWebsocket:
     # Don't grow a table larger than this amount. Helps cap memory usage.
     MAX_TABLE_LEN = 200
 
-    def __init__(self, endpoint, symbol, api_key=None, api_secret=None):
+    def __init__(self, endpoint, symbol, red, api_key=None, api_secret=None):
         '''Connect to the websocket and initialize data stores.'''
         self.logger = logging.getLogger(__name__)
         self.logger.debug("Initializing WebSocket.")
 
         self.endpoint = endpoint
         self.symbol = symbol
+        self.red = red
+
+        # instantiate an orderbook in Redis
+        self.orderbook = OrderBook(EXCH, symbol, red)
+
+        # the key in Redis for margin info
+        self.KEY_TEMPLATE_MARGIN = '%s-%s-margin-%s' % (EXCH, symbol, ACCOUNT)
+        # the key in Redis for position info
+        self.KEY_TEMPLATE_POSITION = '%s-%s-position-%s' % (EXCH, symbol, ACCOUNT)
 
         if api_key is not None and api_secret is None:
             raise ValueError('api_secret is required if api_key is provided')
@@ -84,11 +109,11 @@ class BitMEXWebsocket:
 
     def funds(self):
         '''Get your margin details.'''
-        return self.data['margin'][0]
+        return self.red.hgetall(self.KEY_TEMPLATE_MARGIN)
 
     def positions(self):
         '''Get your positions.'''
-        return self.data['position']
+        return self.red.hgetall(self.KEY_TEMPLATE_POSITION)
 
     def market_depth(self):
         '''Get market depth (orderbook). Returns all levels.'''
@@ -127,7 +152,7 @@ class BitMEXWebsocket:
         # Wait for connect before continuing
         conn_timeout = 5
         while not self.ws.sock or not self.ws.sock.connected and conn_timeout:
-            sleep(1)
+            time.sleep(1)
             conn_timeout -= 1
         if not conn_timeout:
             self.logger.error("Couldn't connect to WS! Exiting.")
@@ -172,12 +197,12 @@ class BitMEXWebsocket:
         '''On subscribe, this data will come down. Wait for it.'''
         # Wait for the keys to show up from the ws
         while not {'margin', 'position', 'order', 'orderBookL2'} <= set(self.data):
-            sleep(0.1)
+            time.sleep(0.1)
 
     def __wait_for_symbol(self, symbol):
         '''On subscribe, this data will come down. Wait for it.'''
         while not {'instrument', 'trade', 'quote'} <= set(self.data):
-            sleep(0.1)
+            time.sleep(0.1)
 
     def __send_command(self, command, args=None):
         '''Send a raw command.'''
@@ -187,7 +212,7 @@ class BitMEXWebsocket:
 
     def __on_message(self, message):
         '''Handler for parsing WS messages.'''
-        message = json.loads(message)
+        message = json.loads(message, object_pairs_hook=helper_dict_clean)  # convert None to empty string ''
         self.logger.debug(json.dumps(message))
 
         table = message.get("table")
@@ -205,12 +230,47 @@ class BitMEXWebsocket:
                 # 'insert'  - new row
                 # 'update'  - update row
                 # 'delete'  - delete row
+
+                # we will give special attention to
+                # 1. orderbook data
+                # 2. balance data
+                # 3. position data
+
+                # orderbook, balance, and position data are written into Redis,
+                # and when we query for them using this object's methods, the
+                # object reads the data from Redis and return them to us.
+
                 if action == 'partial':
                     self.logger.debug("%s: partial" % table)
                     self.data[table] = message['data']
                     # Keys are communicated on partials to let you know how to uniquely identify
                     # an item. We use it for updates.
                     self.keys[table] = message['keys']
+
+                    # write snapshots into Redis
+                    if table in TARGET and message['data']:  # non-empty message['data']
+                        if table == 'margin':
+                            # write margin info into Redis using hash
+                            self.red.hset(self.KEY_TEMPLATE_MARGIN, mapping=message['data'][0])
+                        elif table == 'position':
+                            # write position info into Redis using hash
+                            self.red.hset(self.KEY_TEMPLATE_POSITION, mapping=message['data'][0])
+                        elif table == 'orderBookL2':
+                            # I think timestamp should be included in message,
+                            # however it's not, so here I manually create one.
+                            timestamp = self.orderbook.getTimestamp()
+                            #orders = []
+                            for elm in message['data']:
+                                if elm['side'] == 'Buy':
+                                    orderType = Bid
+                                    tree = self.orderbook.bids
+                                else:
+                                    orderType = Ask
+                                    tree = self.orderbook.asks
+                                #orders.append(orderType(elm['id'], elm['size'], elm['price'], timestamp))
+                                order = orderType(elm['id'], elm['size'], elm['price'], timestamp)
+                                tree.insertOrder(order)
+
                 elif action == 'insert':
                     self.logger.debug('%s: inserting %s' % (table, message['data']))
                     self.data[table] += message['data']
@@ -219,6 +279,19 @@ class BitMEXWebsocket:
                     # Don't trim orders because we'll lose valuable state if we do.
                     if table not in ['order', 'orderBookL2'] and len(self.data[table]) > BitMEXWebsocket.MAX_TABLE_LEN:
                         self.data[table] = self.data[table][BitMEXWebsocket.MAX_TABLE_LEN // 2:]
+
+                    # insert new orders into the orderbook in Redis
+                    if table == 'orderBookL2' and message['data']:
+                        timestamp = self.orderbook.getTimestamp()
+                        for elm in message['data']:
+                            if elm['side'] == 'Buy':
+                                orderType = Bid
+                                tree = self.orderbook.bids
+                            else:
+                                orderType = Ask
+                                tree = self.orderbook.asks
+                            order = orderType(elm['id'], elm['size'], elm['price'], timestamp)
+                            tree.insertOrder(order)
 
                 elif action == 'update':
                     self.logger.debug('%s: updating %s' % (table, message['data']))
@@ -231,12 +304,40 @@ class BitMEXWebsocket:
                         # Remove cancelled / filled orders
                         if table == 'order' and not order_leaves_quantity(item):
                             self.data[table].remove(item)
+
+                    # update the snapshots in Redis
+                    if table in TARGET and message['data']:
+                        if table == 'margin':
+                            self.red.hset(self.KEY_TEMPLATE_MARGIN, mapping=message['data'][0])
+                        elif table == 'position':
+                            self.red.hset(self.KEY_TEMPLATE_POSITION, mapping=message['data'][0])
+                        elif table == 'orderBookL2':
+                            for elm in message['data']:
+                                orderId = elm['id']
+                                side = elm['side']
+                                size = elm['size']
+                                tree = self.orderbook.bids if side == 'Buy' else self.orderbook.asks
+                                if not tree.orderExists(orderId):
+                                    return  # order not existed. Could happen before push
+                                tree.updateOrder(orderId, {'qty': size})
+                        else:
+                            pass
+
                 elif action == 'delete':
                     self.logger.debug('%s: deleting %s' % (table, message['data']))
                     # Locate the item in the collection and remove it.
                     for deleteData in message['data']:
                         item = find_by_keys(self.keys[table], self.data[table], deleteData)
                         self.data[table].remove(item)
+
+                    # update the snapshots in Redis
+                    if table == 'orderBookL2' and message['data']:
+                        for elm in message['data']:
+                            orderId = elm['id']
+                            side = elm['side']
+                            tree = self.orderbook.bids if side == 'Buy' else self.orderbook.asks
+                            tree.removeOrderById(orderId)
+
                 else:
                     raise Exception("Unknown action: %s" % action)
         except:
