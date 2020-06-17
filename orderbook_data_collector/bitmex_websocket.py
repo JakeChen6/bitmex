@@ -259,17 +259,17 @@ class BitMEXWebsocket:
                             # I think timestamp should be included in message,
                             # however it's not, so here I manually create one.
                             timestamp = self.orderbook.getTimestamp()
-                            #orders = []
-                            for elm in message['data']:
-                                if elm['side'] == 'Buy':
-                                    orderType = Bid
-                                    tree = self.orderbook.bids
+                            buy_orders = []
+                            sell_orders = []
+                            for order in message['data']:
+                                if order['side'] == 'Buy':
+                                    buy_orders.append(order)
                                 else:
-                                    orderType = Ask
-                                    tree = self.orderbook.asks
-                                #orders.append(orderType(elm['id'], elm['size'], elm['price'], timestamp))
-                                order = orderType(elm['id'], elm['size'], elm['price'], timestamp)
-                                tree.insertOrder(order)
+                                    sell_orders.append(order)
+                            buy_orders = list(map(lambda x: Bid(x['id'], x['size'], x['price'], timestamp), buy_orders))
+                            sell_orders = list(map(lambda x: Ask(x['id'], x['size'], x['price'], timestamp), sell_orders))
+                            self.orderbook.bids.insertManyOrders(buy_orders)
+                            self.orderbook.asks.insertManyOrders(sell_orders)
 
                 elif action == 'insert':
                     self.logger.debug('%s: inserting %s' % (table, message['data']))
@@ -283,15 +283,17 @@ class BitMEXWebsocket:
                     # insert new orders into the orderbook in Redis
                     if table == 'orderBookL2' and message['data']:
                         timestamp = self.orderbook.getTimestamp()
-                        for elm in message['data']:
-                            if elm['side'] == 'Buy':
-                                orderType = Bid
-                                tree = self.orderbook.bids
+                        buy_orders = []
+                        sell_orders = []
+                        for order in message['data']:
+                            if order['size'] == 'Buy':
+                                buy_orders.append(order)
                             else:
-                                orderType = Ask
-                                tree = self.orderbook.asks
-                            order = orderType(elm['id'], elm['size'], elm['price'], timestamp)
-                            tree.insertOrder(order)
+                                sell_orders.append(order)
+                        buy_orders = list(map(lambda x: Bid(x['id'], x['size'], x['price'], timestamp), buy_orders))
+                        sell_orders = list(map(lambda x: Ask(x['id'], x['size'], x['price'], timestamp), sell_orders))
+                        self.orderbook.bids.insertManyOrders(buy_orders)
+                        self.orderbook.asks.insertManyOrders(sell_orders)
 
                 elif action == 'update':
                     self.logger.debug('%s: updating %s' % (table, message['data']))
@@ -312,14 +314,19 @@ class BitMEXWebsocket:
                         elif table == 'position':
                             self.red.hset(self.KEY_TEMPLATE_POSITION, mapping=message['data'][0])
                         elif table == 'orderBookL2':
+                            bid_updates = []
+                            ask_updates = []
                             for elm in message['data']:
-                                orderId = elm['id']
-                                side = elm['side']
-                                size = elm['size']
-                                tree = self.orderbook.bids if side == 'Buy' else self.orderbook.asks
-                                if not tree.orderExists(orderId):
-                                    return  # order not existed. Could happen before push
-                                tree.updateOrder(orderId, {'qty': size})
+                                if elm['size'] == 'Buy':
+                                    if self.orderbook.bids.orderExists(elm['id']):
+                                        bid_updates.append(elm)
+                                else:
+                                    if self.orderbook.asks.orderExists(elm['id']):
+                                        ask_updates.append(elm)
+                            bid_updates = [{'orderId': u['id'], 'mapping': {'qty': u['size']}} for u in bid_updates]
+                            ask_updates = [{'orderId': u['id'], 'mapping': {'qty': u['size']}} for u in ask_updates]
+                            self.orderbook.bids.updateManyOrders(bid_updates)
+                            self.orderbook.asks.updateManyOrders(ask_updates)
                         else:
                             pass
 

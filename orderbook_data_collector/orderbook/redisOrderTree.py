@@ -42,8 +42,41 @@ class OrderTree:
         self.red.hset(self.KEY_TEMPLATE_ORDER % order.orderId, mapping=order.__dict__)
         self.red.rpush(self.KEY_TEMPLATE_ORDERS_BY_PRICE % price, order.orderId)
 
+    def insertManyOrders(self, orderList):
+        """
+        orderList : list of orders
+        """
+        if not orderList:
+            return
+
+        # update the price tree
+        prices = set(order.price for order in orderList)
+        for price in prices:
+            if not self.red.exists(self.KEY_TEMPLATE_ORDERS_BY_PRICE % price):
+                self.red.zadd(self.KEY_PRICE_TREE, {price: price})
+
+        # execute write operations in a batch to reduce the number of network round trips
+        with self.red.pipeline() as pipe:  # in redis-py, Pipeline is a transactional pipeline class by default
+            for order in orderList:
+                self.red.hset(self.KEY_TEMPLATE_ORDER % order.orderId, mapping=order.__dict__)
+                self.red.rpush(self.KEY_TEMPLATE_ORDERS_BY_PRICE % order.price, order.orderId)
+            pipe.execute()
+
     def updateOrder(self, orderId, mapping):
         self.red.hset(self.KEY_TEMPLATE_ORDER % orderId, mapping=mapping)
+
+    def updateManyOrders(self, updates):
+        """
+        updates : list of order updates
+        """
+        if not updates:
+            return
+
+        # execute write operations in a batch to reduce the number of network round trips
+        with self.red.pipeline() as pipe:  # in redis-py, Pipeline is a transactional pipeline class by default
+            for update in updates:
+                self.red.hset(self.KEY_TEMPLATE_ORDER % update['orderId'], mapping=update['mapping'])
+            pipe.execute()
 
     def removeOrderById(self, orderId):
         order = self.red.hgetall(self.KEY_TEMPLATE_ORDER % orderId)
@@ -51,6 +84,12 @@ class OrderTree:
         if not self.red.exists(self.KEY_TEMPLATE_ORDERS_BY_PRICE % order['price']):
             self.red.zrem(self.KEY_PRICE_TREE, order['price'])
         self.red.delete(self.KEY_TEMPLATE_ORDER % orderId)
+
+    def removeManyOrders(self, orderIds):
+        """
+        orderIds : list of orderId
+        """
+        raise NotImplementedError()
 
     def maxPrice(self):
         r = self.red.zrevrange(self.KEY_PRICE_TREE, 0, 0)
