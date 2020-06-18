@@ -15,10 +15,34 @@ from db_writer import write_to_db
 
 from bitmex_config import ACCOUNT
 
+DIR = '/Users/zhishe/myProjects/bitmex'
+
 EXCH = 'BitMEX'
 
 # This is what I'm asked to write into Redis
 TARGET = ['orderBookL2', 'margin', 'position']
+
+
+def setup_logger():
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+
+    # create formatter
+    formatter = logging.Formatter("\n\n%(asctime)s - %(name)s.%(funcName)s - %(levelname)s - %(message)s")
+
+    # print INFO level logs to terminal
+    ch = logging.StreamHandler()
+    ch.setFormatter(formatter)
+    ch.setLevel(logging.INFO)
+    logger.addHandler(ch)
+
+    # write DEBUG level logs to a file
+    fh = logging.FileHandler(DIR + '/websocket.log')
+    fh.setFormatter(formatter)
+    fh.setLevel(logging.DEBUG)
+    logger.addHandler(fh)
+
+    return logger
 
 
 def helper_dict_clean(items):
@@ -44,7 +68,7 @@ class BitMEXWebsocket:
 
     def __init__(self, endpoint, symbol, red, api_key=None, api_secret=None):
         '''Connect to the websocket and initialize data stores.'''
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger()
         self.logger.debug("Initializing WebSocket.")
 
         self.endpoint = endpoint
@@ -100,6 +124,7 @@ class BitMEXWebsocket:
         '''Call this to exit - will close websocket.'''
         self.exited = True
         self.ws.close()
+        self.db_queue.put((datetime.datetime.utcnow().timestamp(), {'action': 'terminate'}))
 
     def get_instrument(self):
         '''Get the raw instrument data for this symbol.'''
