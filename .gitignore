@@ -1,4 +1,8 @@
 .DS_Store
+redis_samp.py
+mongo_samp.py
+system design.jpg
+system design.pptx
 
 *.pyc
 
