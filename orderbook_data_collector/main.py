@@ -16,12 +16,6 @@ DB_NUM = 3  # Redis database number
 
 def run():
 
-    red = redis.StrictRedis(charset='utf-8', decode_responses=True, db=DB_NUM)
-
-    # instantiate the WS will make it connect.
-    ws = BitMEXWebsocket(endpoint="https://testnet.bitmex.com/api/v1", symbol="XBTUSD", red=red,
-                         api_key=API_KEY, api_secret=API_SECRET)
-
     #logger.info('Instrument data: %s' % ws.get_instrument())
 
     # run forever
@@ -35,4 +29,11 @@ def run():
 
 
 if __name__ == '__main__':
-    run()
+    red = redis.StrictRedis(charset='utf-8', decode_responses=True, db=DB_NUM)
+
+    # instantiate the WS will make it connect.
+    ws = BitMEXWebsocket(endpoint="https://testnet.bitmex.com/api/v1", symbol="XBTUSD", red=red,
+                         api_key=API_KEY, api_secret=API_SECRET)
+
+    input('Press Enter to exit...')
+    ws.exit()
