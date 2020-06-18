@@ -7,6 +7,7 @@ Created on Wed Jun 17 17:14:45 2020
 """
 
 import logging
+import json
 import traceback
 
 from pymongo import MongoClient
@@ -19,6 +20,14 @@ MONGODB_URL = f"mongodb+srv://{USER_NAME}:{PASSWORD}@{CLUSTER_NAME}-cgkkq.mongod
 
 
 def write_to_db(keys, queue):
+    """
+    keys : dict
+        table : collection name in MongoDB
+
+    queue : queue.Queue
+        the communication channel. Data to write into MongoDB is read from queue.
+
+    """
     db_writer = DB_Writer(keys)
     db_writer.start()
 
@@ -54,9 +63,10 @@ class DB_Writer:
         """
         Write data to MongoDB.
         """
-        self.logger.debug('Writing to MongoDB...')
+        self.logger.debug(json.dumps(message))
 
         # action is used to differentiate between snapshot and real-time update data
+
         # 'partial' - full table image - snapshot
         # 'insert'  - new row - real-time update
         # 'update'  - update row - real-time update
@@ -72,8 +82,6 @@ class DB_Writer:
             self.db[collection_name].insert_one(data)
         except:
             self.logger.error(traceback.format_exc())
-
-        self.logger.debug('Writing done.')
 
     def close(self):
         """
