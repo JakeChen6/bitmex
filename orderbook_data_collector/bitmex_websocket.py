@@ -2,13 +2,17 @@ import websocket
 import threading
 import traceback
 import time
+import datetime
 import json
 import logging
 import urllib
 import math
+from queue import Queue
 from util.api_key import generate_nonce, generate_signature
 
 from orderbook.orderbook import Bid, Ask, OrderBook
+from db_writer import write_to_db
+
 from bitmex_config import ACCOUNT
 
 EXCH = 'BitMEX'
@@ -47,14 +51,6 @@ class BitMEXWebsocket:
         self.symbol = symbol
         self.red = red
 
-        # instantiate an orderbook in Redis
-        self.orderbook = OrderBook(EXCH, symbol, red)
-
-        # the key in Redis for margin info
-        self.KEY_TEMPLATE_MARGIN = '%s-%s-margin-%s' % (EXCH, symbol, ACCOUNT)
-        # the key in Redis for position info
-        self.KEY_TEMPLATE_POSITION = '%s-%s-position-%s' % (EXCH, symbol, ACCOUNT)
-
         if api_key is not None and api_secret is None:
             raise ValueError('api_secret is required if api_key is provided')
         if api_key is None and api_secret is not None:
@@ -66,6 +62,26 @@ class BitMEXWebsocket:
         self.data = {}
         self.keys = {}
         self.exited = False
+
+        # Redis
+        # instantiate an orderbook in Redis
+        self.orderbook = OrderBook(EXCH, symbol, red)
+
+        # the key in Redis for margin info
+        self.KEY_TEMPLATE_MARGIN = '%s-%s-margin-%s' % (EXCH, symbol, ACCOUNT)
+        # the key in Redis for position info
+        self.KEY_TEMPLATE_POSITION = '%s-%s-position-%s' % (EXCH, symbol, ACCOUNT)
+
+        # MongoDB
+        # the collection names to use in MongoDB
+        collection_names = {'margin': self.KEY_TEMPLATE_MARGIN,
+                            'position': self.KEY_TEMPLATE_POSITION,
+                            'orderBookL2': '%s-%s-orderBookL2' % (EXCH, symbol)}
+
+        # start the database writing thread
+        self.db_queue = Queue()
+        self.dbt = threading.Thread(target=write_to_db, args=(collection_names, self.db_queue))
+        self.dbt.start()
 
         # We can subscribe right in the connection querystring, so let's build that.
         # Subscribe to all pertinent endpoints
@@ -271,6 +287,10 @@ class BitMEXWebsocket:
                             self.orderbook.bids.insertManyOrders(buy_orders)
                             self.orderbook.asks.insertManyOrders(sell_orders)
 
+                        # write into MongoDB
+                        timestamp = datetime.datetime.utcnow().timestamp()
+                        self.db_queue.put((timestamp, message))
+
                 elif action == 'insert':
                     self.logger.debug('%s: inserting %s' % (table, message['data']))
                     self.data[table] += message['data']
@@ -294,6 +314,10 @@ class BitMEXWebsocket:
                         sell_orders = list(map(lambda x: Ask(x['id'], x['size'], x['price'], timestamp), sell_orders))
                         self.orderbook.bids.insertManyOrders(buy_orders)
                         self.orderbook.asks.insertManyOrders(sell_orders)
+
+                        # write into MongoDB
+                        timestamp = datetime.datetime.utcnow().timestamp()
+                        self.db_queue.put((timestamp, message))
 
                 elif action == 'update':
                     self.logger.debug('%s: updating %s' % (table, message['data']))
@@ -327,8 +351,10 @@ class BitMEXWebsocket:
                             ask_updates = [{'orderId': u['id'], 'mapping': {'qty': u['size']}} for u in ask_updates]
                             self.orderbook.bids.updateManyOrders(bid_updates)
                             self.orderbook.asks.updateManyOrders(ask_updates)
-                        else:
-                            pass
+
+                        # write into MongoDB
+                        timestamp = datetime.datetime.utcnow().timestamp()
+                        self.db_queue.put((timestamp, message))
 
                 elif action == 'delete':
                     self.logger.debug('%s: deleting %s' % (table, message['data']))
@@ -344,6 +370,10 @@ class BitMEXWebsocket:
                             side = elm['side']
                             tree = self.orderbook.bids if side == 'Buy' else self.orderbook.asks
                             tree.removeOrderById(orderId)
+
+                        # write into MongoDB
+                        timestamp = datetime.datetime.utcnow().timestamp()
+                        self.db_queue.put((timestamp, message))
 
                 else:
                     raise Exception("Unknown action: %s" % action)
